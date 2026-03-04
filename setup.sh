@@ -107,103 +107,169 @@ if PG_BIN_DIR=$(find_psql 2>/dev/null); then
     fi
 fi
 
-# --- Local PG instance: download + initdb if needed ---
+# --- Local PG instance: install + initdb if needed ---
 if [ -z "$PG_BIN_DIR" ] && ! (PGPASSWORD=clawith psql -h localhost -p 5432 -U clawith -d clawith -c "SELECT 1" &>/dev/null); then
     echo -e "  ${CYAN}↓${NC} No usable PostgreSQL found — setting up a local instance..."
     PG_MANAGED_BY_US=true
     PGDATA="$ROOT/.pgdata"
     PG_LOCAL="$ROOT/.pg"
 
-    # Download prebuilt PostgreSQL if not already present
+    # Strategy 1: Install via system package manager (most reliable)
     if [ ! -x "$PG_LOCAL/bin/psql" ]; then
-        echo "  Downloading PostgreSQL binary..."
-        ARCH=$(uname -m)
+        INSTALLED_VIA_PKG=false
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
-        if [ "$OS" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
-            PG_URL="https://github.com/nicholasgasior/docker-postgres-portable/releases/download/15.4/postgres-15.4-linux-x86_64.tar.gz"
-            # Fallback: use the system's package manager download if available
-        elif [ "$OS" = "darwin" ]; then
-            echo -e "  ${YELLOW}⚠${NC}  On macOS, please install PostgreSQL via Homebrew:"
-            echo "    brew install postgresql@15 && brew services start postgresql@15"
-            echo "    Then re-run: bash setup.sh"
-            exit 1
-        else
-            echo -e "  ${RED}✗${NC} Unsupported platform: $OS/$ARCH"
-            echo "  Please install PostgreSQL manually. See README for details."
-            exit 1
+        if [ "$OS" = "darwin" ]; then
+            if command -v brew &>/dev/null; then
+                echo "  Installing PostgreSQL via Homebrew..."
+                brew install postgresql@15 2>/dev/null && brew services start postgresql@15 2>/dev/null && INSTALLED_VIA_PKG=true
+            else
+                echo -e "  ${YELLOW}⚠${NC}  On macOS, please install Homebrew first, then:"
+                echo "    brew install postgresql@15 && brew services start postgresql@15"
+                echo "    Then re-run: bash setup.sh"
+                exit 1
+            fi
+        elif [ "$OS" = "linux" ]; then
+            # Check if sudo is available
+            CAN_SUDO=false
+            if command -v sudo &>/dev/null; then
+                if sudo -n true 2>/dev/null || (echo "" | sudo -S true 2>/dev/null); then
+                    CAN_SUDO=true
+                fi
+            fi
+
+            if [ "$CAN_SUDO" = true ]; then
+                if command -v apt-get &>/dev/null; then
+                    echo "  Installing PostgreSQL via apt..."
+                    sudo apt-get update -qq 2>/dev/null
+                    sudo apt-get install -y -qq postgresql postgresql-client 2>/dev/null && INSTALLED_VIA_PKG=true
+                elif command -v yum &>/dev/null; then
+                    echo "  Installing PostgreSQL via yum..."
+                    sudo yum install -y -q postgresql-server postgresql 2>/dev/null && \
+                    sudo postgresql-setup --initdb 2>/dev/null; \
+                    sudo systemctl start postgresql 2>/dev/null && INSTALLED_VIA_PKG=true
+                elif command -v dnf &>/dev/null; then
+                    echo "  Installing PostgreSQL via dnf..."
+                    sudo dnf install -y -q postgresql-server postgresql 2>/dev/null && \
+                    sudo postgresql-setup --initdb 2>/dev/null; \
+                    sudo systemctl start postgresql 2>/dev/null && INSTALLED_VIA_PKG=true
+                fi
+            fi
         fi
 
-        mkdir -p "$PG_LOCAL"
-        if curl -fsSL "$PG_URL" -o /tmp/clawith_pg.tar.gz 2>/dev/null; then
-            tar -xzf /tmp/clawith_pg.tar.gz -C "$PG_LOCAL" --strip-components=1 2>/dev/null || \
-            tar -xzf /tmp/clawith_pg.tar.gz -C "$PG_LOCAL" 2>/dev/null
-            rm -f /tmp/clawith_pg.tar.gz
-            echo -e "  ${GREEN}✓${NC} PostgreSQL binary downloaded"
-        else
-            echo -e "  ${YELLOW}⚠${NC}  Download failed. Trying to use system PostgreSQL binaries..."
-            # Try to find initdb/pg_ctl even if psql wasn't in PATH
-            for dir in /www/server/pgsql /usr/local/pgsql /usr/lib/postgresql/15; do
+        if [ "$INSTALLED_VIA_PKG" = true ]; then
+            echo -e "  ${GREEN}✓${NC} PostgreSQL installed via package manager"
+            # Re-find psql after install
+            if PG_BIN_DIR=$(find_psql 2>/dev/null); then
+                if [ -d "$PG_BIN_DIR" ]; then
+                    export PATH="$PG_BIN_DIR:$PATH"
+                fi
+            fi
+            # Wait for PG to be ready
+            for i in $(seq 1 10); do
+                if pg_isready -h localhost -p 5432 -q 2>/dev/null; then
+                    PG_PORT=5432
+                    break
+                fi
+                sleep 1
+            done
+            # Create role and database
+            if command -v psql &>/dev/null; then
+                if ! psql -h localhost -p $PG_PORT -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
+                    sudo -u postgres createuser clawith 2>/dev/null || createuser -h localhost -p $PG_PORT clawith 2>/dev/null || true
+                    sudo -u postgres psql -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" 2>/dev/null || \
+                        psql -h localhost -p $PG_PORT -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" 2>/dev/null || true
+                    echo -e "  ${GREEN}✓${NC} Created role: clawith"
+                fi
+                if ! psql -h localhost -p $PG_PORT -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
+                    sudo -u postgres createdb -O clawith clawith 2>/dev/null || createdb -h localhost -p $PG_PORT -O clawith clawith 2>/dev/null || true
+                    echo -e "  ${GREEN}✓${NC} Created database: clawith"
+                fi
+                PG_MANAGED_BY_US=false  # System manages PG now
+            fi
+        fi
+    fi
+
+    # Strategy 2: Use system PG binaries from non-standard paths for user-space initdb
+    if [ "$INSTALLED_VIA_PKG" != true ] || [ "$PG_MANAGED_BY_US" = true ]; then
+        if [ ! -x "$PG_LOCAL/bin/initdb" ]; then
+            # Try to link from common system paths
+            for dir in /www/server/pgsql /usr/local/pgsql /usr/lib/postgresql/15 /usr/lib/postgresql/14 /usr/lib/postgresql/16; do
                 if [ -x "$dir/bin/initdb" ]; then
-                    ln -sf "$dir" "$PG_LOCAL"
-                    echo -e "  ${GREEN}✓${NC} Linked system PG binaries from $dir"
+                    mkdir -p "$PG_LOCAL"
+                    ln -sf "$dir/bin" "$PG_LOCAL/bin" 2>/dev/null || cp -r "$dir/bin" "$PG_LOCAL/bin" 2>/dev/null
+                    if [ -d "$dir/lib" ]; then
+                        ln -sf "$dir/lib" "$PG_LOCAL/lib" 2>/dev/null || cp -r "$dir/lib" "$PG_LOCAL/lib" 2>/dev/null
+                    fi
+                    if [ -d "$dir/share" ]; then
+                        ln -sf "$dir/share" "$PG_LOCAL/share" 2>/dev/null || cp -r "$dir/share" "$PG_LOCAL/share" 2>/dev/null
+                    fi
+                    echo -e "  ${GREEN}✓${NC} Found system PG binaries at $dir"
                     break
                 fi
             done
         fi
-    fi
 
-    if [ -x "$PG_LOCAL/bin/initdb" ]; then
-        export PATH="$PG_LOCAL/bin:$PATH"
+        if [ -x "$PG_LOCAL/bin/initdb" ]; then
+            export PATH="$PG_LOCAL/bin:$PATH"
+            export LD_LIBRARY_PATH="$PG_LOCAL/lib:${LD_LIBRARY_PATH:-}"
 
-        # Find a free port
-        PG_PORT=$(find_free_port 5432)
+            # Find a free port
+            PG_PORT=$(find_free_port 5432)
 
-        # Initialize data directory
-        if [ ! -f "$PGDATA/PG_VERSION" ]; then
-            echo "  Initializing database cluster..."
-            initdb -D "$PGDATA" -U postgres --auth=trust -E UTF8 --locale=C >/dev/null 2>&1
-            # Configure port
-            sed -i "s/#port = 5432/port = $PG_PORT/" "$PGDATA/postgresql.conf" 2>/dev/null || \
-            sed -i '' "s/#port = 5432/port = $PG_PORT/" "$PGDATA/postgresql.conf" 2>/dev/null
-            sed -i "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost'/" "$PGDATA/postgresql.conf" 2>/dev/null || \
-            sed -i '' "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost'/" "$PGDATA/postgresql.conf" 2>/dev/null
-            echo -e "  ${GREEN}✓${NC} Database cluster initialized (port $PG_PORT)"
-        else
-            # Read configured port from existing cluster
-            PG_PORT=$(grep "^port = " "$PGDATA/postgresql.conf" 2>/dev/null | awk '{print $3}')
-            PG_PORT=${PG_PORT:-5432}
-            echo -e "  ${GREEN}✓${NC} Existing data directory found (port $PG_PORT)"
-        fi
-
-        # Start PostgreSQL
-        if ! pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
-            pg_ctl -D "$PGDATA" -l "$PGDATA/pg.log" start >/dev/null 2>&1
-            sleep 2
-            if pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
-                echo -e "  ${GREEN}✓${NC} PostgreSQL started on port $PG_PORT"
+            # Initialize data directory
+            if [ ! -f "$PGDATA/PG_VERSION" ]; then
+                echo "  Initializing database cluster..."
+                initdb -D "$PGDATA" -U postgres --auth=trust -E UTF8 --locale=C >/dev/null 2>&1
+                # Configure port (handle both GNU and BSD sed)
+                sed -i "s/#port = 5432/port = $PG_PORT/" "$PGDATA/postgresql.conf" 2>/dev/null || \
+                sed -i '' "s/#port = 5432/port = $PG_PORT/" "$PGDATA/postgresql.conf" 2>/dev/null
+                sed -i "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost'/" "$PGDATA/postgresql.conf" 2>/dev/null || \
+                sed -i '' "s/#listen_addresses = 'localhost'/listen_addresses = 'localhost'/" "$PGDATA/postgresql.conf" 2>/dev/null
+                echo -e "  ${GREEN}✓${NC} Database cluster initialized (port $PG_PORT)"
             else
-                echo -e "  ${RED}✗${NC} Failed to start PostgreSQL. Check $PGDATA/pg.log"
-                exit 1
+                # Read configured port from existing cluster
+                PG_PORT=$(grep "^port = " "$PGDATA/postgresql.conf" 2>/dev/null | awk '{print $3}')
+                PG_PORT=${PG_PORT:-5432}
+                echo -e "  ${GREEN}✓${NC} Existing data directory found (port $PG_PORT)"
+            fi
+
+            # Start PostgreSQL
+            if ! pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
+                pg_ctl -D "$PGDATA" -l "$PGDATA/pg.log" start >/dev/null 2>&1
+                sleep 2
+                if pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
+                    echo -e "  ${GREEN}✓${NC} PostgreSQL started on port $PG_PORT"
+                else
+                    echo -e "  ${RED}✗${NC} Failed to start PostgreSQL. Check $PGDATA/pg.log"
+                    exit 1
+                fi
+            else
+                echo -e "  ${GREEN}✓${NC} PostgreSQL already running on port $PG_PORT"
+            fi
+
+            # Create role and database
+            if ! psql -h localhost -p "$PG_PORT" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
+                createuser -h localhost -p "$PG_PORT" -U postgres clawith 2>/dev/null || true
+                psql -h localhost -p "$PG_PORT" -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" &>/dev/null
+                echo -e "  ${GREEN}✓${NC} Created role: clawith"
+            fi
+            if ! psql -h localhost -p "$PG_PORT" -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
+                createdb -h localhost -p "$PG_PORT" -U postgres -O clawith clawith 2>/dev/null
+                echo -e "  ${GREEN}✓${NC} Created database: clawith"
             fi
         else
-            echo -e "  ${GREEN}✓${NC} PostgreSQL already running on port $PG_PORT"
+            echo -e "  ${RED}✗${NC} Could not set up PostgreSQL automatically."
+            echo ""
+            echo "  Please install PostgreSQL manually:"
+            echo ""
+            echo "    Ubuntu/Debian:  sudo apt install postgresql"
+            echo "    CentOS/RHEL:    sudo yum install postgresql-server"
+            echo "    macOS:          brew install postgresql@15"
+            echo ""
+            echo "  Then re-run: bash setup.sh"
+            exit 1
         fi
-
-        # Create role and database
-        if ! psql -h localhost -p "$PG_PORT" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
-            createuser -h localhost -p "$PG_PORT" -U postgres clawith 2>/dev/null || true
-            psql -h localhost -p "$PG_PORT" -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" &>/dev/null
-            echo -e "  ${GREEN}✓${NC} Created role: clawith"
-        fi
-        if ! psql -h localhost -p "$PG_PORT" -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
-            createdb -h localhost -p "$PG_PORT" -U postgres -O clawith clawith 2>/dev/null
-            echo -e "  ${GREEN}✓${NC} Created database: clawith"
-        fi
-    else
-        echo -e "  ${RED}✗${NC} Could not set up PostgreSQL automatically."
-        echo "  Please install PostgreSQL manually. See README for details."
-        exit 1
     fi
 fi
 
