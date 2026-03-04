@@ -18,18 +18,9 @@ get_server_ip() {
     echo "$ip"
 }
 
-# --- Helper: detect China network (slow PyPI) ---
-IN_CHINA=false
-if ! curl -s --connect-timeout 1 -m 2 https://pypi.org >/dev/null 2>&1; then
-    IN_CHINA=true
-fi
-PIP_MIRROR=""
-NPM_MIRROR=""
-if [ "$IN_CHINA" = true ]; then
-    PIP_MIRROR="-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
-    NPM_MIRROR="--registry https://registry.npmmirror.com"
-    echo -e "  ${CYAN}ℹ${NC}  Using China mirrors (Tsinghua PyPI + npmmirror)"
-fi
+# --- Package mirrors (Tsinghua PyPI + npmmirror, fast globally) ---
+PIP_MIRROR="-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn"
+NPM_MIRROR="--registry https://registry.npmmirror.com"
 
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════${NC}"
