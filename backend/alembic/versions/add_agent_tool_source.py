@@ -14,8 +14,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("agent_tools", sa.Column("source", sa.String(20), nullable=False, server_default="system"))
-    op.add_column("agent_tools", sa.Column("installed_by_agent_id", sa.UUID(), nullable=True))
+    op.execute("ALTER TABLE agent_tools ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'system'")
+    op.execute("ALTER TABLE agent_tools ADD COLUMN IF NOT EXISTS installed_by_agent_id UUID")
 
 
 def downgrade() -> None:
