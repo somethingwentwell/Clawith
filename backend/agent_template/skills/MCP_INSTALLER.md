@@ -31,11 +31,22 @@ Show the results and let the user pick. Note the `ID` field (e.g. `github`).
 ### Method A: Smithery Import
 
 #### Check Smithery API Key
-If no Smithery key is configured, guide the user:
-> "要通过 Smithery 导入工具，需要一个 Smithery API Key：
-> 1. 注册/登录 https://smithery.ai
-> 2. 前往 https://smithery.ai/account/api-keys 创建 Key
-> 3. 将 Key 提供给我"
+If no Smithery key is configured, explain Smithery and guide the user. Use the following talking points (adapt to context, don't read verbatim):
+
+> **Smithery** (smithery.ai) 是一个 MCP 工具市场，类似于"应用商店"。通过它，我可以帮你一键安装各种第三方工具（如 GitHub、Notion、Slack 等），并自动完成认证。
+>
+> **为什么需要注册？**
+> Smithery 用 API Key 来识别你的身份，这样安装的工具会关联到你的账号，认证信息也会安全保存。
+>
+> **注册一次后有什么好处？**
+> - 🔑 只需提供一次 Key，后续安装其他工具时我会自动帮你配置
+> - 🔐 不需要为每个工具单独创建 Token（如 GitHub PAT），OAuth 一键授权
+> - 📦 支持上千种 MCP 工具，随时可以扩展你的能力
+>
+> **获取步骤：**
+> 1. 访问 https://smithery.ai 注册/登录
+> 2. 前往 https://smithery.ai/account/api-keys 创建 API Key
+> 3. 将 Key 提供给我
 
 #### Import
 ```
