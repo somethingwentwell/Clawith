@@ -167,6 +167,30 @@ docker compose up -d --build
 **Agent workspace data storage:**
 Agent workspace files (soul.md, memory, skills, workspace files) are stored in `./backend/agent_data/` on the host filesystem. Each agent has its own directory named by its UUID (e.g., `backend/agent_data/<agent-id>/`). This directory is mounted into the backend container at `/data/agents/`, making agent data directly accessible from your local filesystem.
 
+**Running as admin user:**
+The backend container runs as the `clawith` user by default. To run commands as the `admin` user (with sudo privileges), use:
+```bash
+# Get an interactive shell as admin (recommended for multiple commands)
+docker compose exec --user admin backend bash
+
+# Run a single command as admin
+docker compose exec --user admin backend <command>
+
+# Run a command as root via sudo
+docker compose exec --user admin backend sudo <command>
+```
+
+**Example: Installing packages as admin:**
+```bash
+# Get admin shell
+docker compose exec --user admin backend bash
+
+# Inside the shell, you can use sudo without password
+sudo apt-get update
+sudo apt-get install -y <package>
+sudo npm install -g <package>
+```
+
 > **🇨🇳 Docker Registry Mirror (China users):** If `docker compose up -d` fails with a timeout, configure a Docker registry mirror first:
 > ```bash
 > sudo tee /etc/docker/daemon.json > /dev/null <<EOF
